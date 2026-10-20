@@ -1,8 +1,10 @@
-"""Deterministic population-level controller derived from the BANC v888 graph.
+"""Acchiappa la Mosca API.
 
-The source graph is reduced offline into nine flow-by-side populations. This
-service simulates those populations as a small leaky rate network. It does not
-simulate individual neurons, spikes, eyes, muscles, or validated fly behavior.
+The /brain-step endpoint advances a small leaky-integrate-and-fire circuit over
+individual neurons and synapses from the male-cns:v1.0 Drosophila connectome.
+Visual currents are encoded from a looming object by the caller. The simulator
+is intentionally lightweight and is not a complete fly brain or a validated
+biophysical model.
 """
 from __future__ import annotations
 import math
@@ -12,6 +14,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+import numpy as np
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
@@ -37,6 +40,49 @@ for target in range(len(_NAMES)):
     ])
 _CYCLE_SECONDS = 30.0
 _STEP_SECONDS = 0.1
+
+# Individual-neuron escape subcircuit. Synapse counts are normalized by the
+# postsynaptic neuron's total input, then scaled as in a simple LIF model.
+_CIRCUIT_PATH = Path(__file__).with_name("escape_circuit.json")
+with _CIRCUIT_PATH.open("r", encoding="utf-8") as _circuit_file:
+    _CIRCUIT = json.load(_circuit_file)
+_NEURONS = _CIRCUIT["neurons"]
+_N = len(_NEURONS)
+_INDEX = {neuron["bodyId"]: i for i, neuron in enumerate(_NEURONS)}
+_TYPES = [neuron["type"] for neuron in _NEURONS]
+_INSTANCES = [neuron.get("instance", "") for neuron in _NEURONS]
+_RAW = np.zeros((_N, _N), dtype=np.float32)  # [post, pre]
+for _edge in _CIRCUIT["edges"]:
+    _pre = _INDEX.get(_edge["pre"])
+    _post = _INDEX.get(_edge["post"])
+    if _pre is not None and _post is not None:
+        _RAW[_post, _pre] += float(_edge["weight"])
+_TOTALS = _RAW.sum(axis=1, keepdims=True)
+_IS_SOURCE = _TOTALS[:, 0] == 0
+_TOTALS[_TOTALS == 0] = 1.0
+_WEIGHTS = (_RAW / _TOTALS) * np.float32(3.0)
+_SOURCES = {
+    side: {
+        "LC4": np.asarray([i for i, n in enumerate(_NEURONS) if n["type"] == "LC4" and n.get("instance", "").endswith("_" + side)], dtype=np.int32),
+        "LPLC2": np.asarray([i for i, n in enumerate(_NEURONS) if n["type"] == "LPLC2" and n.get("instance", "").endswith("_" + side)], dtype=np.int32),
+    }
+    for side in ("L", "R")
+}
+_OUTPUTS = {
+    side: np.asarray([i for i, n in enumerate(_NEURONS) if n["type"] == "DLMn" and n.get("instance", "").endswith("_" + side)], dtype=np.int32)
+    for side in ("L", "R")
+}
+_GF = np.asarray([i for i, kind in enumerate(_TYPES) if kind == "GF"], dtype=np.int32)
+_GF_SIDE = {
+    side: np.asarray([i for i in _GF if _INSTANCES[i].endswith("_" + side)], dtype=np.int32)
+    for side in ("L", "R")
+}
+# Treat LC4 and LPLC2 as sensory input layers. The extracted circuit also has
+# recurrent edges within these populations, but Roblox supplies their visual
+# drive directly as the model's sensory boundary condition.
+_SENSORY = np.asarray([i for i, kind in enumerate(_TYPES) if kind in ("LC4", "LPLC2")], dtype=np.int32)
+_IS_SOURCE[_SENSORY] = True
+_SIMULATION_DESCRIPTION = "327 individual neurons; 20,684 MaleCNS synapses; 1 ms LIF steps"
 
 def _sigmoid(v):
     return 1 / (1 + math.exp(-max(-30, min(30, v))))
@@ -90,19 +136,78 @@ def _fly_at(now):
         "elapsed": round(t, 3),
     }
 
+def _finite_vector(value, name):
+    if not isinstance(value, list) or len(value) != _N:
+        raise ValueError(f"state.{name} must be a list of {_N} numbers")
+    arr = np.asarray(value, dtype=np.float32)
+    if not np.isfinite(arr).all():
+        raise ValueError(f"state.{name} must contain only finite numbers")
+    return np.clip(arr, -10.0, 10.0)
+
+def _brain_step(payload):
+    dt = float(payload.get("dt", 0.1))
+    if not math.isfinite(dt) or dt < 0.02 or dt > 0.25:
+        raise ValueError("dt must be between 0.02 and 0.25 seconds")
+    state = payload.get("state") or {}
+    voltage = _finite_vector(state.get("voltage", [0.0] * _N), "voltage")
+    activity = _finite_vector(state.get("activity", [0.0] * _N), "activity")
+    activity = np.clip(activity, 0.0, 1.0)
+    sensory = payload.get("visual") or {}
+    external = np.zeros(_N, dtype=np.float32)
+    for side in ("L", "R"):
+        side_input = sensory.get(side) or {}
+        for kind in ("LC4", "LPLC2"):
+            current = float(side_input.get(kind, 0.0))
+            if not math.isfinite(current) or current < 0 or current > 4:
+                raise ValueError(f"visual.{side}.{kind} must be between 0 and 4")
+            external[_SOURCES[side][kind]] = current
+
+    steps = max(1, round(dt * 1000))
+    spike_counts = np.zeros(_N, dtype=np.float32)
+    for _ in range(steps):
+        synaptic_input = _WEIGHTS @ activity
+        voltage += np.float32(0.1) * (-voltage + synaptic_input)
+        spiked = voltage >= 1.0
+        spike_counts += spiked
+        voltage[spiked] = 0.0
+        source_activity = np.clip(external / 4.0, 0.0, 1.0)
+        activity = np.where(_IS_SOURCE, source_activity, spiked.astype(np.float32))
+
+    duration = steps / 1000.0
+    left_rate = float(spike_counts[_OUTPUTS["L"]].sum() / max(1, len(_OUTPUTS["L"])) / duration)
+    right_rate = float(spike_counts[_OUTPUTS["R"]].sum() / max(1, len(_OUTPUTS["R"])) / duration)
+    gf_rate = float(spike_counts[_GF].sum() / max(1, len(_GF)) / duration)
+    gf_left_rate = float(spike_counts[_GF_SIDE["L"]].sum() / max(1, len(_GF_SIDE["L"])) / duration)
+    gf_right_rate = float(spike_counts[_GF_SIDE["R"]].sum() / max(1, len(_GF_SIDE["R"])) / duration)
+    return {
+        "state": {"voltage": voltage.round(5).tolist(), "activity": activity.round(5).tolist()},
+        "motor": {"DLMn_L_hz": round(left_rate, 3), "DLMn_R_hz": round(right_rate, 3), "GF_L_hz": round(gf_left_rate, 3), "GF_R_hz": round(gf_right_rate, 3), "GF_hz": round(gf_rate, 3)},
+        "simulation": _SIMULATION_DESCRIPTION,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
 @app.get("/")
 def index():
-    return jsonify({"service": "Acchiappa la Mosca", "ok": True, "endpoint": "/fly-position"})
+    return jsonify({"service": "Acchiappa la Mosca", "ok": True, "endpoints": ["/health", "/fly-position", "/brain-step"]})
 
 @app.get("/health")
 def health():
     return jsonify({
         "ok": True,
-        "brain_model": _GRAPH["dataset"],
-        "source_edges": _GRAPH["source_edge_count"],
-        "edges_in_population_model": _GRAPH["included_edge_count"],
+        "legacy_position_model": _GRAPH["dataset"],
+        "escape_circuit": _SIMULATION_DESCRIPTION,
         "utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     })
+
+@app.post("/brain-step")
+def brain_step():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "expected a JSON object"}), 400
+    try:
+        return jsonify({"ok": True, **_brain_step(payload)})
+    except (TypeError, ValueError, OverflowError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 @app.get("/fly-position")
 def fly_position():

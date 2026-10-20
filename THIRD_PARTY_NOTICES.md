@@ -15,3 +15,9 @@ The BANC project identifies the data deposit as **Creative Commons Attribution 4
 ## What this project derives
 
 The source data contain 13,620,865 directed neuron-to-neuron pairs for the v3 edge list. The preparation script maps pairs whose neurons have one of the three annotated flow labels (`afferent`, `intrinsic`, `efferent`) and groups them by left/right/midline side. It sums the source `count` field into a 9×9 population matrix. In the generated release used here, 12,399,147 pairs map into those populations; unannotated nodes are omitted. These are structural connection counts, not measured neural activity.
+
+## Escape circuit data
+
+`escape_circuit.json` contains an extracted subgraph of the adult male *Drosophila melanogaster* central nervous system connectome, MaleCNS v1.0: 327 neurons and 20,684 directed synaptic connections involving LC4, LPLC2, DNp01/GF, TTMn, PSI, and DLMn cells. The data are from the Janelia/FlyEM MaleCNS release and are distributed under CC BY 4.0. Cite Berg et al., “Sexual dimorphism in the complete Drosophila male central nervous system connectome,” *Cell* (2026), DOI: https://doi.org/10.1016/j.cell.2026.08.015, and the [MaleCNS download page](https://male-cns.janelia.org/download/).
+
+The application code implements its own small leaky-integrate-and-fire (LIF) approximation over that graph. The sensory currents and mapping from bilateral GF spikes to Roblox movement are simplified engineering assumptions. This is a connectome-based subcircuit simulation, not a complete brain, a biophysical replica, or evidence of consciousness.

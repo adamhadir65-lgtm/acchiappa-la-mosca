@@ -1,42 +1,70 @@
-"""Deterministic lightweight Drosophila-inspired fly controller API.
+"""Deterministic population-level controller derived from the BANC v888 graph.
 
-Educational toy network only: it is not a biological connectome reconstruction.
-The trajectory is deterministic for a given UTC time and reset anchor.
+The source graph is reduced offline into nine flow-by-side populations. This
+service simulates those populations as a small leaky rate network. It does not
+simulate individual neurons, spikes, eyes, muscles, or validated fly behavior.
 """
 from __future__ import annotations
 import math
 import os
+import json
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 _lock = threading.Lock()
 _reset_epoch = time.time()  # Render Free restarts lose this in-memory value.
-_NAMES = ("visual_left", "visual_right", "turn_left", "turn_right", "speed", "motor")
-_W = (
-    (0, -.32, .18, -.10, 0, 0), (-.32, 0, -.10, .18, 0, 0),
-    (.45, -.25, .12, -.18, 0, 0), (-.25, .45, -.18, .12, 0, 0),
-    (.08, .08, 0, 0, .10, .20), (0, 0, .26, -.26, .30, .12),
-)
+_GRAPH_PATH = Path(__file__).with_name("connectome_weights.json")
+with _GRAPH_PATH.open("r", encoding="utf-8") as _graph_file:
+    _GRAPH = json.load(_graph_file)
+_NAMES = tuple(_GRAPH["groups"])
+_EDGE_COUNTS = _GRAPH["edge_count_matrix"]
+if len(_NAMES) != 9 or len(_EDGE_COUNTS) != 9 or any(len(row) != 9 for row in _EDGE_COUNTS):
+    raise RuntimeError("connectome_weights.json must contain a 9 by 9 population graph")
+
+# The measured edges mapped to these nine annotated populations are row-normalized
+# by target population to keep the reduced model numerically stable. These are not
+# fitted synaptic dynamics.
+_INCOMING = []
+for target in range(len(_NAMES)):
+    total = sum(_EDGE_COUNTS[source][target] for source in range(len(_NAMES)))
+    _INCOMING.append([
+        (_EDGE_COUNTS[source][target] / total) if total else 0.0
+        for source in range(len(_NAMES))
+    ])
+_CYCLE_SECONDS = 30.0
+_STEP_SECONDS = 0.1
 
 def _sigmoid(v):
     return 1 / (1 + math.exp(-max(-30, min(30, v))))
 
 def _neural_state(elapsed):
-    """A small recurrent toy network evaluated with fixed deterministic steps."""
-    phase = elapsed * (2 * math.pi / 12)
-    state = [.5] * len(_NAMES)
-    dt, steps = .05, 48
+    """Evaluate one deterministic cycle of the reduced connectome graph."""
+    cycle_time = elapsed % _CYCLE_SECONDS
+    phase = 2 * math.pi * cycle_time / _CYCLE_SECONDS
+    steps = max(1, math.ceil(cycle_time / _STEP_SECONDS))
+    state = [0.15] * len(_NAMES)
     for step in range(steps):
-        t = phase - (steps - 1 - step) * dt
-        sensory = (.5 + .5 * math.sin(t), .5 + .5 * math.sin(t + 1.35), 0, 0, 0, 0)
+        t = phase * (step + 1) / steps
+        # A periodic visual-like input keeps the autonomous game character moving.
+        # No camera or player data enters this input signal.
+        sensory = (
+            0.15 + 0.55 * (0.5 + 0.5 * math.sin(t * 2.0)),
+            0.15 + 0.55 * (0.5 + 0.5 * math.sin(t * 2.0 + 1.65)),
+            0.12,
+        )
         next_state = []
-        for i in range(len(state)):
-            recurrent = sum(_W[i][j] * state[j] for j in range(len(state)))
-            target = _sigmoid(2 * (recurrent + sensory[i] * 1.35 - .35))
-            next_state.append(state[i] + dt * (target - state[i]) / .45)
+        for target_index in range(len(state)):
+            incoming = sum(
+                _INCOMING[target_index][source_index] * state[source_index]
+                for source_index in range(len(state))
+            )
+            external = sensory[target_index] if target_index < 3 else 0.0
+            target_activity = _sigmoid(4.0 * (0.8 * incoming + external - 0.42))
+            next_state.append(state[target_index] + _STEP_SECONDS * (target_activity - state[target_index]) / 0.6)
         state = next_state
     return state
 
@@ -45,14 +73,19 @@ def _fly_at(now):
         anchor = _reset_epoch
     t = max(0.0, now - anchor)
     n = _neural_state(t)
-    heading = .55 * math.sin(t * .47) + .35 * (n[3] - n[2])
+    cycle_phase = 2 * math.pi * (t % _CYCLE_SECONDS) / _CYCLE_SECONDS
+    turn_signal = n[7] - n[6]
+    heading = math.atan2(12.0 * math.cos(cycle_phase), -8.0 * math.sin(cycle_phase)) + 0.7 * turn_signal
+    speed = 4.0 + 4.0 * ((n[6] + n[7]) / 2.0)
     return {
-        "x": round(10 * math.sin(t * .31) + 2 * math.sin(t * .83 + .4), 4),
-        "y": round(5 + 2.2 * math.sin(t * .72) + 1.2 * (n[4] - .5), 4),
-        "z": round(-12 + 8 * math.cos(t * .27) + 1.5 * math.sin(t * .61), 4),
+        "x": round(12 * math.sin(cycle_phase) + 2 * turn_signal, 4),
+        "y": round(5 + 1.5 * math.sin(cycle_phase * 2) + 0.5 * (n[8] - 0.5), 4),
+        "z": round(-12 + 8 * math.cos(cycle_phase + 0.7 * turn_signal), 4),
         "rotation": round(math.degrees(heading) % 360, 3), "state": "flying",
-        "speed": round(5 + 2 * n[4], 3),
+        "speed": round(speed, 3),
         "neurons": {name: round(value, 5) for name, value in zip(_NAMES, n)},
+        "brain_model": _GRAPH["dataset"],
+        "simulation_level": "9 connectome-derived populations; not a full neuron simulation",
         "timestamp": datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z"),
         "elapsed": round(t, 3),
     }
@@ -63,7 +96,13 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
+    return jsonify({
+        "ok": True,
+        "brain_model": _GRAPH["dataset"],
+        "source_edges": _GRAPH["source_edge_count"],
+        "edges_in_population_model": _GRAPH["included_edge_count"],
+        "utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    })
 
 @app.get("/fly-position")
 def fly_position():

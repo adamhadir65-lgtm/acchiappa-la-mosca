@@ -1,0 +1,137 @@
+{
+  "dataset": "BANC v888, edgelist v3 (synapse size threshold >= 10)",
+  "license": "CC BY 4.0",
+  "attribution": "Bates AS, Phelps JS, Kim M, Yang HHJ, et al. Distributed control circuits across a brain-and-cord connectome. Nature (2026). DOI: 10.1038/s41586-026-10735-w. Dataset DOI: 10.7910/DVN/7WTH1N.",
+  "groups": [
+    "afferent_left",
+    "afferent_right",
+    "afferent_mid",
+    "intrinsic_left",
+    "intrinsic_right",
+    "intrinsic_mid",
+    "efferent_left",
+    "efferent_right",
+    "efferent_mid"
+  ],
+  "group_neuron_counts": [
+    7086,
+    7049,
+    2954,
+    62206,
+    70406,
+    9096,
+    492,
+    540,
+    1
+  ],
+  "source_edge_count": 13620865,
+  "included_edge_count": 12399147,
+  "excluded_edge_count": 1221718,
+  "included_synapse_count": 39440874,
+  "edge_count_matrix": [
+    [
+      84200,
+      7917,
+      5149,
+      762397,
+      340543,
+      4867,
+      27251,
+      2627,
+      0
+    ],
+    [
+      8076,
+      118419,
+      6730,
+      391986,
+      798847,
+      5660,
+      2780,
+      28969,
+      0
+    ],
+    [
+      5264,
+      7017,
+      21857,
+      93209,
+      185197,
+      11794,
+      688,
+      1252,
+      0
+    ],
+    [
+      165866,
+      86764,
+      18547,
+      10512259,
+      4163122,
+      271870,
+      514842,
+      295712,
+      43
+    ],
+    [
+      79691,
+      181434,
+      28881,
+      3938003,
+      13380506,
+      364917,
+      272157,
+      587395,
+      9
+    ],
+    [
+      469,
+      1187,
+      2216,
+      512695,
+      911982,
+      170114,
+      8393,
+      4711,
+      0
+    ],
+    [
+      189,
+      86,
+      6,
+      9238,
+      3963,
+      106,
+      3971,
+      1982,
+      2
+    ],
+    [
+      80,
+      281,
+      4,
+      5748,
+      11506,
+      87,
+      1716,
+      5426,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "source_sha256": {
+    "metadata": "86ccf5df0c67419f8c5f43e93a7ed38d23a080e9f7fde26737290252f3780098",
+    "edgelist": "8c296e946f3c69a8c7222f30ad75fa8a98eeb189124fec6df829c9125f4be64b"
+  },
+  "reduction": "Full measured BANC v888 v3 neuron-to-neuron edgelist aggregated into 9 annotated flow-by-side populations. Connection counts are retained; unannotated cells are excluded. This is a reduced population graph, not a per-neuron simulation."
+}
